@@ -7,7 +7,7 @@ Enter your board and goals, and the solver simulates thousands of games to recom
 **Use it:** open the site link in the description of this repository (desktop browser recommended, so you can keep it next to the game).
 
 ## Help collect data
-Some point values are still estimates (marked ≈ in the app). When you hit one, the app asks what the game showed. Your answers collect under **Settings → Your sightings**. Copy them and share them in the Reddit thread.
+Some point values are still estimates (marked ≈ in the app). When you hit one, the app asks what the game showed. Your answers collect under **Settings → Your sightings**. Copy them and share them with me on Reddit or Discord.
 
 ## Credits
 - Breeding requirements and odds: the community's [DragonVale Compendium 2](https://docs.google.com/spreadsheets/d/1bfV28fxSNrqiC0WYWFJCpOhK_xUVPBeLhO9ekAt-MuU/).
