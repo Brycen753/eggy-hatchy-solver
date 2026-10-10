@@ -274,6 +274,8 @@ const countsForElement = (d, el) => (d.hab || (d.els.length < 10 ? d.els : [])).
 const PRIMARY_BASE = { Water: 200, Earth: 75, Dark: 1000, Air: 525, Fire: 50 };
 // Epic values seen in play (or pinned by a game's range): the rainbow family is a flat 27,500.
 const EPIC_BASE = { 'Rainbow': 27500, 'Double Rainbow': 27500, 'Triple Rainbow': 27500, 'Bronze': 22500, 'Platinum': 24500, 'Sprite': 24000 };
+// Best guesses, still shown as ≈ and still asked about: same epic family and same breed chance as a confirmed value.
+const EPIC_LIKELY = { 'Eve': 24000 };   // Surface, 1%, like Sprite
 function baseValue(d) {
   if (d.rarity === 'Primary' && d.n in PRIMARY_BASE) return PRIMARY_BASE[d.n];
   // Each element beyond two takes off another 100 (Thicket and Oni, both 3 elements).
@@ -281,6 +283,7 @@ function baseValue(d) {
   if (d.rarity === 'Hybrid' || d.rarity === 'Primary') return sum;
   if (d.rarity === 'Rare') return sum + Math.round(10900 - 100000 * d.chance); // confirmed on 14 two-element rares
   if (d.n in EPIC_BASE) return EPIC_BASE[d.n];
+  if (d.n in EPIC_LIKELY) return EPIC_LIKELY[d.n];
   // Unconfirmed epics: the treasure pair fits 26,000 - 100,000 x chance; no game range has gone above 27,500.
   return Math.min(27500, Math.round(26000 - 100000 * d.chance));
 }
@@ -879,9 +882,12 @@ function moveFacts(m) {
   }
   return first + `<div title="Average total you finish the game with, across the simulated games that start with this move."><span class="label">Avg final score</span><b class="mono">${fmt(m.expScore)}</b><span>across simulations</span></div>`;
 }
+// Would banking every egg on the board right now meet both goals?
 function lockedWin() {
-  const gp = progress(); if (!gp.elementMet) return false;
-  return gp.points + G().cells.reduce((s, c) => s + (c.egg ? ptsOf(c.egg) : 0), 0) >= G().goals.points;
+  const gp = progress(), g = G();
+  const elem = gp.elementCount + g.cells.filter(c => c.egg && isGoalEgg(c.egg)).length;
+  const pts = gp.points + g.cells.reduce((s, c) => s + (c.egg ? ptsOf(c.egg) : 0), 0);
+  return elem >= g.goals.element.count && pts >= g.goals.points;
 }
 
 // Every move this egg can make (or receive), with the solver's numbers when it has them.
@@ -918,9 +924,22 @@ function lostReason() {
 
 // ---------- Data you can contribute ----------
 // Unconfirmed values (estimated epics, unseen single-element dragons) and Treat results get a quick question.
-function askData(q) { S.askData = (S.askData || []).concat([q]); }
+function askData(q) {
+  // one question per dragon/level/twin, and none for a value you've already reported
+  const same = x => x.kind === q.kind && x.dragon === q.dragon && x.level === q.level && !!x.twin === !!q.twin;
+  if (q.kind === 'points' && (S.askData || []).some(same)) return;
+  if (q.kind === 'points' && (S.skipAsk || []).includes(q.dragon)) return;   // you skipped it this game
+  if (q.kind === 'points' && (S.sightings || []).some(s => s.kind === 'points' && s.dragon === q.dragon)) return;
+  S.askData = (S.askData || []).concat([q]);
+}
+// Any egg whose points are still a guess gets a question, wherever it shows up: board setup, a hatch, or a bank.
+function askIfUnconfirmed(name, level, twin, how) {
+  const d = dr(name);
+  if (d && !scoreIsConfirmed(d)) askData({ kind: 'points', dragon: name, level, twin, predicted: points(d, level, twin), how });
+}
 function answerData(value) {
   const q = (S.askData || []).shift(); if (!q) return;
+  if (value === null && q.kind === 'points') S.skipAsk = (S.skipAsk || []).concat([q.dragon]);
   if (value !== null) {
     const d = dr(q.dragon);
     S.sightings = (S.sightings || []).concat([{ date: today(), ...q, elements: d ? (d.hab || d.els).join('+') : '', rarity: d?.rarity || '', shown: value }]);
@@ -983,12 +1002,14 @@ function chooseResult(name) {
   S.pending = null; S.justRedid = false;
   queuePU(p.from);
   const d = dr(name);
-  if (d && !scoreIsConfirmed(d)) askData({ kind: 'points', dragon: name, level: pv.level, twin: pv.twin, predicted: points(d, pv.level, pv.twin) });
+  askIfUnconfirmed(name, pv.level, pv.twin, 'hatch');
   if (pv.used.some(u => u.pu === 'treat')) askData({ kind: 'treat', dragon: name, level: pv.level, twin: pv.twin, a: pv.a, b: pv.b, aLv, bLv, used: pv.used.map(u => u.pu).join('+') });
   save(); render(); checkRedo();
 }
 function bank(cell) {
   snapshot();
+  const e = cellAt(...cell).egg;
+  if (e) askIfUnconfirmed(e.d, e.lv, e.twin, 'bank');
   S.game = applyBank(DATA, G(), cell);
   S.pending = null; S.justRedid = false;
   queuePU(cell);
@@ -1031,7 +1052,7 @@ function newGame_(keepEggs = false) {
   const g = newGame({ size: n(), goals: structuredClone(old.goals), redoesLeft: redoesToday() });
   if (keepEggs) old.cells.forEach((c, i) => { if (c.egg) g.cells[i].egg = { ...c.egg }; });
   newChoice = false;
-  S.game = g; S.phase = 'setup'; S.example = false; S.pending = null; S.askPU = []; S.sel = null; advice = null; redoAdvice = null;
+  S.game = g; S.phase = 'setup'; S.example = false; S.pending = null; S.askPU = []; S.skipAsk = []; S.sel = null; advice = null; redoAdvice = null;
   afterChange();
 }
 
@@ -1051,7 +1072,7 @@ function clickCell(r, c) {
 function saveCell() {
   const [r, c] = S.sel, cell = cellAt(r, c);
   const name = document.getElementById('ed-dragon').value.trim();
-  const lv = Math.max(1, parseInt(document.getElementById('ed-level').value, 10) || 1);
+  const lv = Math.max(1, parseInt(document.getElementById('ed-level').value, 10) || (S.defaultLv || 1));
   const twin = document.getElementById('ed-twin').checked;
   const pu = document.getElementById('ed-pu').value || null;
   let d = null;
@@ -1061,6 +1082,7 @@ function saveCell() {
   }
   snapshot();
   cell.egg = d ? { d: d.n, lv, twin } : null;
+  if (d) askIfUnconfirmed(d.n, lv, twin, 'board');
   cell.pu = pu;
   if (G().undo) G().undo = null; // a hand edit ends redo for the last move
   editErr = '';
@@ -1182,7 +1204,7 @@ function renderEditor() {
       <div class="field full"><label for="ed-dragon">Dragon</label>
         <div class="ac-wrap"><input id="ed-dragon" value="${e ? esc(e.d) : ''}" placeholder="Type a dragon name" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="ac" aria-autocomplete="list">
         <div class="ac" id="ac" role="listbox" hidden></div></div></div>
-      <div class="field"><label for="ed-level">Level</label><input id="ed-level" type="number" min="1" max="30" value="${e ? e.lv : 1}"></div>
+      <div class="field"><label for="ed-level">Level</label><input id="ed-level" type="number" min="1" max="30" value="${e ? e.lv : (S.defaultLv || 1)}"></div>
       <div class="field check" style="align-self:end"><input id="ed-twin" type="checkbox" ${e?.twin ? 'checked' : ''}><label for="ed-twin">Twin</label></div>
       <div class="field full"><label for="ed-pu">Power-up on this cell</label>
         <select id="ed-pu"><option value="">None seen</option><option value="twin" ${cell.pu === 'twin' ? 'selected' : ''}>Twin</option><option value="treat" ${cell.pu === 'treat' ? 'selected' : ''}>Treat</option></select></div>
@@ -1230,9 +1252,10 @@ function renderAdvisor() {
         </div></fieldset>
       <div class="form">
         <div class="field full"><label for="g-pts">Points goal</label><input id="g-pts" type="number" min="0" step="500" value="${g.goals.points}"></div>
-        <div class="field"><label for="g-size">Board size</label><select id="g-size">${[3, 4, 5, 6].map(k => `<option value="${k}" ${k === g.size ? 'selected' : ''}>${k} × ${k}</option>`).join('')}</select></div>
+        <div class="field"><label for="g-size">Board size</label><select id="g-size">${[3, 4].map(k => `<option value="${k}" ${k === g.size ? 'selected' : ''}>${k} × ${k}</option>`).join('')}</select></div>
         <div class="field"><label for="g-redo">Redoes left today</label><input id="g-redo" type="number" min="0" max="5" value="${redoesToday()}"></div>
       </div>
+      <div class="row"><span class="hint">Set every egg to</span>${[1, 2, 3].map(k => `<button class="btn small ${(S.defaultLv || 1) === k ? 'primary' : ''}" data-alllv="${k}">Lv ${k}</button>`).join('')}</div>
       <div class="row"><button class="btn primary" id="start">Start game</button><button class="btn" id="clear-board">Clear board</button></div></div>`);
     box.innerHTML = parts.join(''); return;
   }
@@ -1260,7 +1283,7 @@ function renderAdvisor() {
   if (S.askData?.length) {
     const q = S.askData[0];
     parts.push(q.kind === 'points'
-      ? `<div class="ask"><p><b>Help pin down a value:</b> ${esc(q.dragon)}'s points aren't confirmed yet (estimate ≈${fmt(q.predicted)}). Tap the egg in the game. What does it show?</p>
+      ? `<div class="ask"><p><b>Help pin down a value:</b> ${esc(q.dragon)} (Lv ${q.level}${q.twin ? ' twin' : ''}) isn't confirmed yet; the estimate is ≈${fmt(q.predicted)}. ${q.how === 'bank' ? 'How many points did banking it add in the game?' : 'Tap the egg in the game. What points does it show?'}</p>
          <input id="data-val" class="mini" type="number" min="0" placeholder="Points"><button class="btn small" id="data-save">Save</button><button class="btn small ghost" id="data-skip">Skip</button></div>`
       : `<div class="ask"><p><b>Treat check:</b> the solver expects ${esc(q.dragon)} at level ${q.level}. What level is it in the game?</p>
          <input id="data-val" class="mini" type="number" min="1" value="${q.level}"><button class="btn small" id="data-save">Save</button><button class="btn small ghost" id="data-skip">Skip</button></div>`);
@@ -1289,9 +1312,11 @@ function renderAdvisor() {
       <small>Final score ${fmt(gp.points)} · ${cap1(g.goals.element.element)} goal ${gp.elementCount}/${g.goals.element.count}</small></div>
       <div class="row"><button class="btn primary" id="new-game">New game</button></div>`);
   } else if (gp.elementMet && gp.pointsMet) {
-    parts.push(`<div class="banner won">Both goals are met. The win is locked in.<small>Bank the rest in any order; nothing left can lose it.</small></div>`);
+    parts.push(`<div class="banner won">Both goals are met. The win is locked in.<small>Bank the rest in any order; nothing left can lose it.</small></div>
+      <div class="row"><button class="btn primary" id="bank-all">Bank all eggs</button></div>`);
   } else if (lockedWin()) {
-    parts.push(`<div class="banner won">The win is locked in.<small>Banking every egg left reaches both goals. Bank them in any order, or keep combining for a higher score.</small></div>`);
+    parts.push(`<div class="banner won">The win is locked in.<small>Banking every egg left reaches both goals. Bank them in any order, or keep combining for a higher score.</small></div>
+      <div class="row"><button class="btn primary" id="bank-all">Bank all eggs</button></div>`);
   } else if (busy || (!advice && !redoAdvice?.redo)) {
     parts.push('<div class="thinking"><span class="spin"></span>Simulating games to find the best move…</div>');
   } else if (advice?.error) {
@@ -1368,6 +1393,11 @@ document.addEventListener('click', e => {
   if (t.dataset.out) { chooseResult(t.dataset.out); return; }
   if (t.dataset.reveal !== undefined) { reveal(t.dataset.reveal || null); return; }
   if (t.dataset.alt) { playRec(advice.ranked[+t.dataset.alt]); return; }
+  if (t.dataset.alllv) {
+    const k = +t.dataset.alllv; snapshot(); S.defaultLv = k;
+    G().cells.forEach(c => { if (c.egg) c.egg.lv = k; });
+    S.askData = []; afterChange(); toast(`Every egg is now level ${k}. New eggs start at level ${k} too.`); return;
+  }
   if (t.dataset.move) { const [f, to] = t.dataset.move.split('|').map(s => s.split(',').map(Number)); startCombine(f, to); return; }
   switch (t.id) {
     case 'play-best': playRec(advice.ranked[0]); break;
